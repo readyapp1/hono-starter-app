@@ -41,7 +41,6 @@ export const betterAuthOptions: BetterAuthOptions = {
    * Advanced options
    */
   advanced: {
-    generateId: true,
     crossSubDomainCookies: {
       enabled: false,
     },
