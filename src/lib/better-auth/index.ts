@@ -4,14 +4,14 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { betterAuth } from 'better-auth';
 import { betterAuthOptions } from './options';
 
-import * as schema from '../db/schema'; // Ensure the schema is imported
+import * as schema from '../../db/schema'; // Ensure the schema is imported
 
 /**
  * Better Auth Instance
  */
 export const auth = (env: CloudflareBindings): ReturnType<typeof betterAuth> => {
   const sql = neon(env.DATABASE_URL);
-  const db = drizzle(sql);
+  const db = drizzle(sql, { schema });
 
   return betterAuth({
     ...betterAuthOptions,
