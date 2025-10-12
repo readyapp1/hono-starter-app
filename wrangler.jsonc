@@ -5,7 +5,10 @@
   "compatibility_date": "2025-10-11",
   "compatibility_flags": [
     "nodejs_compat"
-  ]
+  ],
+  "dev": {
+    "ip": "0.0.0.0", // Required to enable accessing the dev server from outside the devcontainer.
+  },
   // "vars": {
   //   "MY_VAR": "my-variable"
   // },
