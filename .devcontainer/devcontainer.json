@@ -1,0 +1,24 @@
+{
+    "name": "Hono app starter",
+    "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+    "forwardPorts": [
+      8787
+    ],
+    "portsAttributes": {
+      "8787": {
+        "label": "Hono Dev Server",
+        "onAutoForward": "notify"
+      }
+    },
+    "postCreateCommand": "git config --global commit.gpgsign false; git config --local core.pager \"less -R\"; pnpm install --force",
+    "postStartCommand": "pnpm run dev",
+    "remoteUser": "node",
+    "workspaceFolder": "/workspaces/hono-starter-app",
+    "containerEnv": {
+      "NODE_ENV": "development"
+    },
+    "remoteEnv": {
+      "NODE_ENV": "development"
+    },
+    "shutdownAction": "stopContainer"
+  }
