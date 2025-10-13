@@ -1,0 +1,17 @@
+---
+alwaysApply: true
+---
+
+This Hono HTTP API project is deployed to the Cloudflare Workers platform and manages Object storage for file uploads and downloads via Cloudflare R2 infrastructure.
+
+Object storage operation guidelines:
+- File uploads from the frontend should be made directly from the frontend Nuxt SPA application to Cloudflare R2 via the mechanism of Pre-signed URLs.
+- File downloads and access to users' files from the frontend should be made directly from the frontend Nuxt SPA application via the mechanism of Pre-signed URLs. 
+- You shouldn't use the packages `@aws-sdk/client-s3` and `@aws-sdk/s3-request-signer` because they are incompatible with Workers which defines a browser environment target and then they require DOMParser to be present. So instead, you should use `aws4fetch`.
+
+Resources:
+- Cloudflare R2 Workers API documentation: https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
+- Cloudflare R2 Pre-signed URLs documentation: https://developers.cloudflare.com/r2/api/s3/presigned-urls/index.md
+- Cloudflare R2 Pre-signed URLs official example implementation for aws4fetch: https://developers.cloudflare.com/r2/examples/aws/aws4fetch/index.md
+- Refer to the `aws4fetch` API documentation via the project's README at: https://raw.githubusercontent.com/mhart/aws4fetch/refs/heads/master/README.md
+

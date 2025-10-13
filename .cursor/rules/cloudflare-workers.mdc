@@ -1,0 +1,6 @@
+---
+alwaysApply: true
+---
+
+This Hono HTTP API project is deployed to the Cloudflare Workers platform. As such, you have the following available:
+- The wrangler CLI is installed and you can run it with `npx wrangler`

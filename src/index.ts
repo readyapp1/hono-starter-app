@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { auth } from './lib/better-auth'
+import uploads from './routes/uploads'
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
@@ -16,6 +17,9 @@ app.use('*', cors({
 app.on(['GET', 'POST'], '/api/auth/*', (c) => {
   return auth(c.env).handler(c.req.raw)
 })
+
+// Mount uploads routes
+app.route('/api/uploads', uploads)
 
 app.get('/', (c) => {
   return c.text('Hello Hono!')

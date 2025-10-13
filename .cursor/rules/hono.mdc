@@ -2,4 +2,10 @@
 alwaysApply: true
 ---
 
+## About Hono Web Framework
+
 Learn about the Hono web framework by visiting the following llms.txt file and browsing the Hono documentation pages referneed from it: https://hono.dev/llms.txt
+
+## Local development guidelines
+
+- You should never run the Hono server yourself in your own process like `pnpm dev`. Instead, you should ask me to run it or stop it as required. We choose this way so that our server ports do not conflict.
