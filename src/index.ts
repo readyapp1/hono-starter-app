@@ -3,7 +3,7 @@ import { cors } from 'hono/cors'
 import { auth } from './lib/better-auth'
 import uploads from './routes/uploads'
 
-const app = new Hono<{ Bindings: CloudflareBindings }>()
+const app = new Hono<{ Bindings: Env }>()
 
 // CORS middleware for cross-origin requests
 app.use('*', cors({
