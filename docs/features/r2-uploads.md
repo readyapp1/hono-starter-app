@@ -122,120 +122,684 @@ Generates a pre-signed URL for direct file upload to R2.
 - `400`: Missing required fields, invalid file type, or file size exceeds 10MB
 - `500`: Internal server error
 
-## Frontend Integration Example
+## Frontend Integration Examples
 
-### 1. Request Pre-signed URL
+### Nuxt SPA Implementation
 
-```javascript
-const getPresignedUrl = async (file) => {
-  const response = await fetch('/api/uploads/pre-signed-url', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    credentials: 'include', // Include cookies for authentication
-    body: JSON.stringify({
+#### 1. Types and Interfaces
+
+Create `types/upload.ts`:
+
+```typescript
+export interface UploadRequest {
+  filename: string
+  contentType: string
+  fileSize: number
+}
+
+export interface UploadResponse {
+  presignedUrl: string
+  filename: string
+  originalFilename: string
+  contentType: string
+  fileSize: number
+  expiresIn: number
+}
+
+export interface UploadedFile {
+  filename: string
+  originalName: string
+  contentType: string
+  fileSize: number
+  uploadedAt: string
+}
+
+export interface UploadError {
+  message: string
+  code?: string
+  details?: any
+}
+```
+
+#### 2. Upload Composable
+
+Create `composables/useFileUpload.ts`:
+
+```typescript
+import type { UploadRequest, UploadResponse, UploadedFile, UploadError } from '~/types/upload'
+
+export const useFileUpload = () => {
+  const { $fetch } = useNuxtApp()
+  
+  const uploading = ref(false)
+  const uploadProgress = ref(0)
+  const uploadedFiles = ref<UploadedFile[]>([])
+  const error = ref<UploadError | null>(null)
+
+  // Validate file before upload
+  const validateFile = (file: File): string | null => {
+    // Check file type
+    if (!file.type.startsWith('image/')) {
+      return 'Only image files are allowed'
+    }
+
+    // Check file size (10MB limit)
+    const maxSize = 10 * 1024 * 1024 // 10MB
+    if (file.size > maxSize) {
+      return 'File size must be less than 10MB'
+    }
+
+    return null
+  }
+
+  // Get pre-signed URL from API
+  const getPresignedUrl = async (file: File): Promise<UploadResponse> => {
+    const uploadRequest: UploadRequest = {
       filename: file.name,
       contentType: file.type,
-      fileSize: file.size,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to get pre-signed URL');
-  }
-
-  return await response.json();
-};
-```
-
-### 2. Upload File to R2
-
-```javascript
-const uploadFile = async (file) => {
-  try {
-    // Step 1: Get pre-signed URL
-    const { presignedUrl, filename } = await getPresignedUrl(file);
-
-    // Step 2: Upload file directly to R2
-    const uploadResponse = await fetch(presignedUrl, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': file.type,
-      },
-      body: file,
-    });
-
-    if (!uploadResponse.ok) {
-      throw new Error('Failed to upload file');
+      fileSize: file.size
     }
 
-    console.log('File uploaded successfully:', filename);
-    return filename;
-  } catch (error) {
-    console.error('Upload failed:', error);
-    throw error;
+    try {
+      const response = await $fetch<UploadResponse>('/api/uploads/pre-signed-url', {
+        method: 'POST',
+        body: uploadRequest,
+        credentials: 'include'
+      })
+      
+      return response
+    } catch (err: any) {
+      throw new Error(`Failed to get pre-signed URL: ${err.message || 'Unknown error'}`)
+    }
   }
-};
-```
 
-### 3. Complete Upload Component Example
+  // Upload file directly to R2
+  const uploadToR2 = async (file: File, presignedUrl: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      
+      // Track upload progress
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          uploadProgress.value = Math.round((event.loaded / event.total) * 100)
+        }
+      })
 
-```javascript
-const FileUpload = () => {
-  const [uploading, setUploading] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState([]);
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve()
+        } else {
+          reject(new Error(`Upload failed with status: ${xhr.status}`))
+        }
+      })
 
-  const handleFileUpload = async (event) => {
-    const files = Array.from(event.target.files);
+      xhr.addEventListener('error', () => {
+        reject(new Error('Upload failed due to network error'))
+      })
+
+      xhr.open('PUT', presignedUrl)
+      xhr.setRequestHeader('Content-Type', file.type)
+      xhr.send(file)
+    })
+  }
+
+  // Main upload function
+  const uploadFile = async (file: File): Promise<UploadedFile> => {
+    // Validate file
+    const validationError = validateFile(file)
+    if (validationError) {
+      throw new Error(validationError)
+    }
+
+    uploading.value = true
+    uploadProgress.value = 0
+    error.value = null
+
+    try {
+      // Step 1: Get pre-signed URL
+      const { presignedUrl, filename, originalFilename, contentType, fileSize } = await getPresignedUrl(file)
+
+      // Step 2: Upload file directly to R2
+      await uploadToR2(file, presignedUrl)
+
+      // Step 3: Create uploaded file record
+      const uploadedFile: UploadedFile = {
+        filename,
+        originalName: originalFilename,
+        contentType,
+        fileSize,
+        uploadedAt: new Date().toISOString()
+      }
+
+      uploadedFiles.value.push(uploadedFile)
+      uploadProgress.value = 100
+
+      return uploadedFile
+    } catch (err: any) {
+      error.value = {
+        message: err.message,
+        code: 'UPLOAD_FAILED',
+        details: err
+      }
+      throw err
+    } finally {
+      uploading.value = false
+    }
+  }
+
+  // Upload multiple files
+  const uploadFiles = async (files: File[]): Promise<UploadedFile[]> => {
+    const results: UploadedFile[] = []
     
     for (const file of files) {
-      // Validate file type
-      if (!file.type.startsWith('image/')) {
-        alert('Only image files are allowed');
-        continue;
-      }
-
-      // Validate file size (10MB)
-      if (file.size > 10 * 1024 * 1024) {
-        alert('File size must be less than 10MB');
-        continue;
-      }
-
-      setUploading(true);
       try {
-        const filename = await uploadFile(file);
-        setUploadedFiles(prev => [...prev, { filename, originalName: file.name }]);
-      } catch (error) {
-        console.error('Upload failed:', error);
-      } finally {
-        setUploading(false);
+        const result = await uploadFile(file)
+        results.push(result)
+      } catch (err) {
+        console.error(`Failed to upload ${file.name}:`, err)
+        // Continue with other files
       }
     }
-  };
+    
+    return results
+  }
 
-  return (
-    <div>
+  // Clear uploaded files
+  const clearUploadedFiles = () => {
+    uploadedFiles.value = []
+    error.value = null
+    uploadProgress.value = 0
+  }
+
+  return {
+    // State
+    uploading: readonly(uploading),
+    uploadProgress: readonly(uploadProgress),
+    uploadedFiles: readonly(uploadedFiles),
+    error: readonly(error),
+    
+    // Methods
+    uploadFile,
+    uploadFiles,
+    validateFile,
+    clearUploadedFiles
+  }
+}
+```
+
+#### 3. Upload Component
+
+Create `components/FileUpload.vue`:
+
+```vue
+<template>
+  <div class="file-upload">
+    <!-- Upload Area -->
+    <div 
+      class="upload-area"
+      :class="{ 'uploading': uploading, 'drag-over': isDragOver }"
+      @drop="handleDrop"
+      @dragover.prevent="isDragOver = true"
+      @dragleave="isDragOver = false"
+    >
       <input
+        ref="fileInput"
         type="file"
         accept="image/*"
         multiple
-        onChange={handleFileUpload}
-        disabled={uploading}
+        @change="handleFileSelect"
+        class="hidden"
       />
-      {uploading && <p>Uploading...</p>}
-      <div>
-        <h3>Uploaded Files:</h3>
-        {uploadedFiles.map((file, index) => (
-          <div key={index}>
-            <p>Original: {file.originalName}</p>
-            <p>Stored as: {file.filename}</p>
-          </div>
-        ))}
+      
+      <div v-if="!uploading" class="upload-content">
+        <Icon name="upload" class="upload-icon" />
+        <p class="upload-text">
+          Drag and drop images here, or 
+          <button @click="$refs.fileInput.click()" class="upload-button">
+            browse files
+          </button>
+        </p>
+        <p class="upload-hint">Supports: JPG, PNG, GIF, WebP (max 10MB each)</p>
+      </div>
+      
+      <div v-else class="upload-progress">
+        <Icon name="loading" class="spinning" />
+        <p>Uploading... {{ uploadProgress }}%</p>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: `${uploadProgress}%` }"></div>
+        </div>
       </div>
     </div>
-  );
-};
+
+    <!-- Error Display -->
+    <div v-if="error" class="error-message">
+      <Icon name="error" />
+      <span>{{ error.message }}</span>
+    </div>
+
+    <!-- Uploaded Files -->
+    <div v-if="uploadedFiles.length > 0" class="uploaded-files">
+      <h3>Uploaded Files ({{ uploadedFiles.length }})</h3>
+      <div class="file-list">
+        <div 
+          v-for="file in uploadedFiles" 
+          :key="file.filename"
+          class="file-item"
+        >
+          <div class="file-preview">
+            <img 
+              :src="getFilePreviewUrl(file)" 
+              :alt="file.originalName"
+              class="preview-image"
+            />
+          </div>
+          <div class="file-info">
+            <p class="file-name">{{ file.originalName }}</p>
+            <p class="file-details">
+              {{ formatFileSize(file.fileSize) }} • {{ file.contentType }}
+            </p>
+            <p class="file-date">
+              Uploaded {{ formatDate(file.uploadedAt) }}
+            </p>
+          </div>
+          <div class="file-actions">
+            <button @click="copyFileUrl(file)" class="action-button">
+              <Icon name="copy" />
+            </button>
+            <button @click="downloadFile(file)" class="action-button">
+              <Icon name="download" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div v-if="uploadedFiles.length > 0" class="upload-actions">
+      <button @click="clearUploadedFiles" class="clear-button">
+        Clear All
+      </button>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import type { UploadedFile } from '~/types/upload'
+
+// Props
+interface Props {
+  maxFiles?: number
+  autoUpload?: boolean
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  maxFiles: 10,
+  autoUpload: true
+})
+
+// Emits
+const emit = defineEmits<{
+  upload: [files: UploadedFile[]]
+  error: [error: Error]
+}>()
+
+// Composables
+const { uploadFile, uploadFiles, uploading, uploadProgress, uploadedFiles, error, clearUploadedFiles } = useFileUpload()
+
+// State
+const isDragOver = ref(false)
+const fileInput = ref<HTMLInputElement>()
+
+// Methods
+const handleFileSelect = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const files = Array.from(target.files || [])
+  await processFiles(files)
+}
+
+const handleDrop = async (event: DragEvent) => {
+  event.preventDefault()
+  isDragOver.value = false
+  
+  const files = Array.from(event.dataTransfer?.files || [])
+  await processFiles(files)
+}
+
+const processFiles = async (files: File[]) => {
+  if (files.length === 0) return
+  
+  // Limit number of files
+  const filesToProcess = files.slice(0, props.maxFiles)
+  
+  try {
+    const results = await uploadFiles(filesToProcess)
+    emit('upload', results)
+  } catch (err) {
+    emit('error', err as Error)
+  }
+}
+
+const getFilePreviewUrl = (file: UploadedFile): string => {
+  // Return a preview URL - you might want to implement image resizing
+  return `https://your-cdn-domain.com/${file.filename}`
+}
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes === 0) return '0 Bytes'
+  const k = 1024
+  const sizes = ['Bytes', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+const formatDate = (dateString: string): string => {
+  return new Date(dateString).toLocaleString()
+}
+
+const copyFileUrl = async (file: UploadedFile) => {
+  const url = getFilePreviewUrl(file)
+  await navigator.clipboard.writeText(url)
+  // Show toast notification
+}
+
+const downloadFile = (file: UploadedFile) => {
+  const url = getFilePreviewUrl(file)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.originalName
+  link.click()
+}
+</script>
+
+<style scoped>
+.file-upload {
+  @apply w-full max-w-4xl mx-auto p-6;
+}
+
+.upload-area {
+  @apply border-2 border-dashed border-gray-300 rounded-lg p-8 text-center transition-colors;
+}
+
+.upload-area.uploading {
+  @apply border-blue-500 bg-blue-50;
+}
+
+.upload-area.drag-over {
+  @apply border-blue-500 bg-blue-50;
+}
+
+.upload-content {
+  @apply space-y-4;
+}
+
+.upload-icon {
+  @apply w-12 h-12 mx-auto text-gray-400;
+}
+
+.upload-text {
+  @apply text-lg text-gray-600;
+}
+
+.upload-button {
+  @apply text-blue-600 hover:text-blue-800 underline;
+}
+
+.upload-hint {
+  @apply text-sm text-gray-500;
+}
+
+.upload-progress {
+  @apply space-y-4;
+}
+
+.progress-bar {
+  @apply w-full bg-gray-200 rounded-full h-2;
+}
+
+.progress-fill {
+  @apply bg-blue-600 h-2 rounded-full transition-all duration-300;
+}
+
+.error-message {
+  @apply flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700;
+}
+
+.uploaded-files {
+  @apply mt-8;
+}
+
+.file-list {
+  @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4;
+}
+
+.file-item {
+  @apply border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow;
+}
+
+.file-preview {
+  @apply mb-3;
+}
+
+.preview-image {
+  @apply w-full h-32 object-cover rounded;
+}
+
+.file-info {
+  @apply space-y-1;
+}
+
+.file-name {
+  @apply font-medium text-gray-900 truncate;
+}
+
+.file-details {
+  @apply text-sm text-gray-500;
+}
+
+.file-date {
+  @apply text-xs text-gray-400;
+}
+
+.file-actions {
+  @apply flex gap-2 mt-3;
+}
+
+.action-button {
+  @apply p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded;
+}
+
+.upload-actions {
+  @apply mt-6 flex justify-end;
+}
+
+.clear-button {
+  @apply px-4 py-2 text-gray-600 hover:text-gray-800 border border-gray-300 rounded;
+}
+
+.spinning {
+  @apply animate-spin;
+}
+</style>
+```
+
+#### 4. Usage in Pages
+
+Example usage in `pages/upload.vue`:
+
+```vue
+<template>
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-8">Upload Images</h1>
+    
+    <FileUpload 
+      :max-files="5"
+      @upload="handleUploadSuccess"
+      @error="handleUploadError"
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+import type { UploadedFile } from '~/types/upload'
+
+// Handle successful uploads
+const handleUploadSuccess = (files: UploadedFile[]) => {
+  console.log('Successfully uploaded files:', files)
+  
+  // Show success notification
+  useToast().add({
+    title: 'Upload Successful',
+    description: `${files.length} file(s) uploaded successfully`,
+    color: 'green'
+  })
+  
+  // Redirect or update UI
+  // await navigateTo('/gallery')
+}
+
+// Handle upload errors
+const handleUploadError = (error: Error) => {
+  console.error('Upload error:', error)
+  
+  // Show error notification
+  useToast().add({
+    title: 'Upload Failed',
+    description: error.message,
+    color: 'red'
+  })
+}
+
+// SEO
+useHead({
+  title: 'Upload Images',
+  meta: [
+    { name: 'description', content: 'Upload and manage your images' }
+  ]
+})
+</script>
+```
+
+#### 5. API Configuration
+
+Create `plugins/api.client.ts`:
+
+```typescript
+export default defineNuxtPlugin(() => {
+  const config = useRuntimeConfig()
+  
+  // Configure $fetch defaults
+  const $fetch = $fetch.create({
+    baseURL: config.public.apiBase || 'https://your-hono-api.workers.dev',
+    credentials: 'include',
+    onRequest({ request, options }) {
+      // Add any default headers
+      options.headers = {
+        ...options.headers,
+        'Content-Type': 'application/json'
+      }
+    },
+    onResponseError({ response }) {
+      // Handle common errors
+      if (response.status === 401) {
+        // Redirect to login
+        navigateTo('/login')
+      }
+    }
+  })
+  
+  return {
+    provide: {
+      api: $fetch
+    }
+  }
+})
+```
+
+#### 6. Environment Configuration
+
+Update `nuxt.config.ts`:
+
+```typescript
+export default defineNuxtConfig({
+  // ... other config
+  
+  runtimeConfig: {
+    public: {
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'https://your-hono-api.workers.dev'
+    }
+  },
+  
+  // Enable CORS for API calls
+  nitro: {
+    routeRules: {
+      '/api/**': { cors: true }
+    }
+  }
+})
+```
+
+### React Implementation (Alternative)
+
+For React applications, here's a simplified version:
+
+```typescript
+// hooks/useFileUpload.ts
+import { useState, useCallback } from 'react'
+
+interface UploadResponse {
+  presignedUrl: string
+  filename: string
+  originalFilename: string
+  contentType: string
+  fileSize: number
+  expiresIn: number
+}
+
+export const useFileUpload = () => {
+  const [uploading, setUploading] = useState(false)
+  const [uploadedFiles, setUploadedFiles] = useState<any[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  const uploadFile = useCallback(async (file: File) => {
+    setUploading(true)
+    setError(null)
+
+    try {
+      // Get pre-signed URL
+      const response = await fetch('/api/uploads/pre-signed-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type,
+          fileSize: file.size
+        })
+      })
+
+      if (!response.ok) throw new Error('Failed to get pre-signed URL')
+
+      const { presignedUrl, filename } = await response.json()
+
+      // Upload to R2
+      const uploadResponse = await fetch(presignedUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file
+      })
+
+      if (!uploadResponse.ok) throw new Error('Upload failed')
+
+      setUploadedFiles(prev => [...prev, { filename, originalName: file.name }])
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setUploading(false)
+    }
+  }, [])
+
+  return { uploadFile, uploading, uploadedFiles, error }
+}
 ```
 
 ## File Storage Details
