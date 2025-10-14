@@ -35,7 +35,11 @@ cat > cors.json << EOF
       "allowed": {
         "methods": ["PUT", "GET", "POST","DELETE"],
         "origins": ["*"],
-        "headers": ["Content-Type", "Authorization"]
+        "headers": ["content-type",
+          "x-amz-meta-original-filename",
+          "x-amz-meta-uploaded-at",
+          "x-amz-meta-uploaded-by"
+        ]
       },
       "exposeHeaders": ["ETag"],
       "MaxAgeSeconds": 3000

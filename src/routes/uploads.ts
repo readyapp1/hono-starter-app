@@ -74,30 +74,28 @@ uploads.post('/pre-signed-url', async (c) => {
       region: 'auto',
     })
 
+    // Generate timestamp once to avoid race conditions
+    const uploadedAt = new Date().toISOString()
+
     // Construct the R2 bucket URL (correct format for R2)
     const bucketUrl = `https://${c.env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com/gallery/${uniqueFilename}`
 
     // Create a signed request for PUT operation with query string signing
-    // This creates a pre-signed URL that expires in 1 hour
+    // Use minimal headers to avoid signature mismatches
     const signedRequest = await aws.sign(bucketUrl, {
       method: 'PUT',
       headers: {
         'Content-Type': contentType,
-        'Content-Length': fileSize.toString(),
         'x-amz-meta-original-filename': filename,
         'x-amz-meta-uploaded-by': session.user.id,
-        'x-amz-meta-uploaded-at': new Date().toISOString(),
+        'x-amz-meta-uploaded-at': uploadedAt,
       },
       aws: { 
-        signQuery: true
+        signQuery: true,
       } 
     })
 
-    // Extract the pre-signed URL and add expiration parameter
-    const presignedUrl = new URL(signedRequest.url)
-    presignedUrl.searchParams.set('X-Amz-Expires', '3600') // 1 hour expiration
-    
-    const finalPresignedUrl = presignedUrl.toString()
+    const finalPresignedUrl = signedRequest.url
 
     // Return the pre-signed URL and metadata
     return c.json({
@@ -106,7 +104,9 @@ uploads.post('/pre-signed-url', async (c) => {
       originalFilename: filename,
       contentType,
       fileSize,
-      expiresIn: 3600,
+      expiresIn: 86400,
+      uploadedBy: session.user.id,
+      uploadedAt: uploadedAt,
     })
 
   } catch (error) {

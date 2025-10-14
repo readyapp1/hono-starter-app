@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { auth } from './lib/better-auth'
 import uploads from './routes/uploads'
+import profile from './routes/profile'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -20,6 +21,9 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => {
 
 // Mount uploads routes
 app.route('/api/uploads', uploads)
+
+// Mount profile routes
+app.route('/api/user', profile)
 
 app.get('/', (c) => {
   return c.text('Hello Hono!')

@@ -24,7 +24,7 @@ npx wrangler r2 bucket create gallery
 
 ### 3. Configure CORS Policy
 
-Create a CORS policy file to allow direct uploads from your frontend:
+Create a CORS policy file to allow direct uploads from your frontend. **Important**: Cloudflare R2 requires explicit header names instead of wildcards:
 
 ```bash
 # Create cors.json file
@@ -33,12 +33,12 @@ cat > cors.json << EOF
   "rules": [
     {
       "allowed": {
-        "methods": ["PUT", "GET", "POST","DELETE"],
+        "methods": ["PUT", "GET", "POST", "DELETE"],
         "origins": ["*"],
-        "headers": ["Content-Type", "Authorization"]
+        "headers": ["content-type", "x-amz-meta-original-filename", "x-amz-meta-uploaded-at", "x-amz-meta-uploaded-by"]
       },
       "exposeHeaders": ["ETag"],
-      "MaxAgeSeconds": 3000
+      "maxAgeSeconds": 3000
     }
   ]
 }
@@ -47,6 +47,12 @@ EOF
 # Apply CORS policy to the bucket
 npx wrangler r2 bucket cors set gallery --file=cors.json
 ```
+
+**Critical Note**: Unlike AWS S3, Cloudflare R2 does not support `"headers": ["*"]` wildcards. You must specify each header explicitly, including:
+- `content-type` (required for PUT requests)
+- `x-amz-meta-original-filename` (custom metadata)
+- `x-amz-meta-uploaded-at` (custom metadata)  
+- `x-amz-meta-uploaded-by` (custom metadata)
 
 ### 4. Create R2 API Token
 
@@ -113,7 +119,9 @@ Generates a pre-signed URL for direct file upload to R2.
   "originalFilename": "example.jpg",
   "contentType": "image/jpeg",
   "fileSize": 1024000,
-  "expiresIn": 3600
+  "expiresIn": 86400,
+  "uploadedBy": "user-id-here",
+  "uploadedAt": "2025-01-13T20:45:00.000Z"
 }
 ```
 
@@ -121,6 +129,307 @@ Generates a pre-signed URL for direct file upload to R2.
 - `401`: Authentication required
 - `400`: Missing required fields, invalid file type, or file size exceeds 10MB
 - `500`: Internal server error
+
+### User Profile Endpoints
+
+#### GET `/api/user/profile`
+
+Fetches the current user's profile information.
+
+**Authentication**: Required (Better Auth session)
+
+**Response**:
+```json
+{
+  "id": "user-id",
+  "name": "John Doe",
+  "email": "john@example.com",
+  "image": "a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg",
+  "emailVerified": true,
+  "createdAt": "2025-01-13T10:00:00Z",
+  "updatedAt": "2025-01-13T10:30:00Z"
+}
+```
+
+**Error Responses**:
+- `401`: Authentication required
+- `404`: User not found
+- `500`: Internal server error
+
+#### POST `/api/user/profile`
+
+Updates the current user's profile information.
+
+**Authentication**: Required (Better Auth session)
+
+**Request Body**:
+```json
+{
+  "name": "John Doe",
+  "image": "a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg"
+}
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "user": {
+    "id": "user-id",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "image": "a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg",
+    "emailVerified": true,
+    "createdAt": "2025-01-13T10:00:00Z",
+    "updatedAt": "2025-01-13T10:30:00Z"
+  }
+}
+```
+
+**Error Responses**:
+- `401`: Authentication required
+- `400`: Missing required fields or validation errors
+- `404`: User not found
+- `500`: Internal server error
+
+#### GET `/api/user/profile/image`
+
+Generates a pre-signed download URL for the user's profile image.
+
+**Authentication**: Required (Better Auth session)
+
+**Response** (when user has an image):
+```json
+{
+  "hasImage": true,
+  "downloadUrl": "https://gallery.account.r2.cloudflarestorage.com/xxx?signature=...",
+  "filename": "a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg",
+  "expiresIn": 3600
+}
+```
+
+**Response** (when user has no image):
+```json
+{
+  "hasImage": false,
+  "message": "No profile image set"
+}
+```
+
+**Error Responses**:
+- `401`: Authentication required
+- `404`: User not found
+- `500`: Internal server error
+
+## Complete Profile Management Flow
+
+### Frontend Implementation Example
+
+Here's how to implement the complete profile management flow in your frontend:
+
+```typescript
+// Complete profile management composable
+export const useProfile = () => {
+  const { $fetch } = useNuxtApp()
+  
+  const profile = ref(null)
+  const loading = ref(false)
+  const error = ref(null)
+
+  // Load user profile
+  const loadProfile = async () => {
+    loading.value = true
+    error.value = null
+    
+    try {
+      profile.value = await $fetch('/api/user/profile', {
+        credentials: 'include'
+      })
+    } catch (err) {
+      error.value = err.message
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // Update user profile
+  const updateProfile = async (updates: { name?: string; image?: string }) => {
+    loading.value = true
+    error.value = null
+    
+    try {
+      const response = await $fetch('/api/user/profile', {
+        method: 'POST',
+        body: updates,
+        credentials: 'include'
+      })
+      
+      profile.value = response.user
+      return response.user
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // Get profile image URL
+  const getProfileImageUrl = async () => {
+    try {
+      const response = await $fetch('/api/user/profile/image', {
+        credentials: 'include'
+      })
+      
+      return response.hasImage ? response.downloadUrl : null
+    } catch (err) {
+      console.error('Failed to get profile image URL:', err)
+      return null
+    }
+  }
+
+  // Complete profile update flow
+  const updateProfileWithImage = async (file: File, name: string) => {
+    try {
+      // Step 1: Upload image
+      const { uploadFile } = useFileUpload()
+      const uploadedFile = await uploadFile(file)
+      
+      // Step 2: Update profile with new image
+      const updatedProfile = await updateProfile({
+        name,
+        image: uploadedFile.filename
+      })
+      
+      return updatedProfile
+    } catch (err) {
+      error.value = err.message
+      throw err
+    }
+  }
+
+  return {
+    profile: readonly(profile),
+    loading: readonly(loading),
+    error: readonly(error),
+    loadProfile,
+    updateProfile,
+    getProfileImageUrl,
+    updateProfileWithImage
+  }
+}
+```
+
+### Profile Component Example
+
+```vue
+<template>
+  <div class="profile-management">
+    <div v-if="loading" class="loading">Loading profile...</div>
+    
+    <div v-else-if="error" class="error">{{ error }}</div>
+    
+    <div v-else class="profile-content">
+      <!-- Profile Image -->
+      <div class="profile-image-section">
+        <img 
+          v-if="profileImageUrl" 
+          :src="profileImageUrl" 
+          :alt="profile?.name"
+          class="profile-image"
+        />
+        <div v-else class="no-image">
+          <Icon name="user" />
+        </div>
+        
+        <FileUpload 
+          :max-files="1"
+          @upload="handleImageUpload"
+          @error="handleUploadError"
+        />
+      </div>
+
+      <!-- Profile Form -->
+      <form @submit.prevent="handleSubmit" class="profile-form">
+        <div class="form-group">
+          <label for="name">Name</label>
+          <input 
+            id="name"
+            v-model="form.name" 
+            type="text" 
+            required 
+            :disabled="loading"
+          />
+        </div>
+        
+        <button type="submit" :disabled="loading">
+          {{ loading ? 'Updating...' : 'Update Profile' }}
+        </button>
+      </form>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+const { profile, loading, error, loadProfile, updateProfile, getProfileImageUrl, updateProfileWithImage } = useProfile()
+
+const form = ref({
+  name: '',
+  image: null as File | null
+})
+
+const profileImageUrl = ref<string | null>(null)
+
+// Load profile on mount
+onMounted(async () => {
+  await loadProfile()
+  if (profile.value) {
+    form.value.name = profile.value.name
+    profileImageUrl.value = await getProfileImageUrl()
+  }
+})
+
+// Handle image upload
+const handleImageUpload = async (files: any[]) => {
+  if (files.length > 0) {
+    form.value.image = files[0]
+  }
+}
+
+const handleUploadError = (error: Error) => {
+  console.error('Upload error:', error)
+}
+
+// Handle form submission
+const handleSubmit = async () => {
+  try {
+    if (form.value.image) {
+      // Update with new image
+      await updateProfileWithImage(form.value.image, form.value.name)
+    } else {
+      // Update name only
+      await updateProfile({ name: form.value.name })
+    }
+    
+    // Refresh profile image URL
+    profileImageUrl.value = await getProfileImageUrl()
+    
+    // Show success message
+    useToast().add({
+      title: 'Profile Updated',
+      description: 'Your profile has been updated successfully',
+      color: 'green'
+    })
+  } catch (err) {
+    useToast().add({
+      title: 'Update Failed',
+      description: err.message,
+      color: 'red'
+    })
+  }
+}
+</script>
+```
 
 ## Frontend Integration Examples
 
@@ -214,7 +523,7 @@ export const useFileUpload = () => {
   }
 
   // Upload file directly to R2
-  const uploadToR2 = async (file: File, presignedUrl: string): Promise<void> => {
+  const uploadToR2 = async (file: File, presignedUrl: string, metadata: any): Promise<void> => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest()
       
@@ -239,6 +548,10 @@ export const useFileUpload = () => {
 
       xhr.open('PUT', presignedUrl)
       xhr.setRequestHeader('Content-Type', file.type)
+      // Add metadata headers that match the signed headers
+      xhr.setRequestHeader('x-amz-meta-original-filename', metadata.originalFilename)
+      xhr.setRequestHeader('x-amz-meta-uploaded-by', metadata.uploadedBy)
+      xhr.setRequestHeader('x-amz-meta-uploaded-at', metadata.uploadedAt)
       xhr.send(file)
     })
   }
@@ -257,10 +570,14 @@ export const useFileUpload = () => {
 
     try {
       // Step 1: Get pre-signed URL
-      const { presignedUrl, filename, originalFilename, contentType, fileSize } = await getPresignedUrl(file)
+      const { presignedUrl, filename, originalFilename, contentType, fileSize, uploadedBy, uploadedAt } = await getPresignedUrl(file)
 
-      // Step 2: Upload file directly to R2
-      await uploadToR2(file, presignedUrl)
+      // Step 2: Upload file directly to R2 with metadata
+      await uploadToR2(file, presignedUrl, {
+        originalFilename,
+        uploadedBy,
+        uploadedAt
+      })
 
       // Step 3: Create uploaded file record
       const uploadedFile: UploadedFile = {
@@ -781,10 +1098,15 @@ export const useFileUpload = () => {
 
       const { presignedUrl, filename } = await response.json()
 
-      // Upload to R2
+      // Upload to R2 with metadata headers
       const uploadResponse = await fetch(presignedUrl, {
         method: 'PUT',
-        headers: { 'Content-Type': file.type },
+        headers: { 
+          'Content-Type': file.type,
+          'x-amz-meta-original-filename': response.originalFilename,
+          'x-amz-meta-uploaded-by': response.uploadedBy,
+          'x-amz-meta-uploaded-at': response.uploadedAt
+        },
         body: file
       })
 
@@ -808,7 +1130,7 @@ export const useFileUpload = () => {
 - **Metadata Storage**: Original filename stored in R2 object metadata
 - **File Size Limit**: 10MB per file
 - **Supported Types**: All image MIME types (`image/*`)
-- **URL Expiration**: 1 hour
+- **URL Expiration**: 24 hours (86400 seconds)
 - **Storage Location**: `gallery` R2 bucket
 
 ## Security Features
@@ -824,9 +1146,11 @@ export const useFileUpload = () => {
 ### Common Issues
 
 1. **"R2 not enabled" error**: Enable R2 in Cloudflare Dashboard first
-2. **CORS errors**: Ensure CORS policy is properly configured
-3. **Authentication errors**: Verify Better Auth session is working
-4. **Upload failures**: Check R2 API credentials and bucket permissions
+2. **CORS errors**: Ensure CORS policy is properly configured with explicit headers (not wildcards)
+3. **403 Forbidden errors**: Check that all metadata headers match between signed request and frontend upload
+4. **Authentication errors**: Verify Better Auth session is working
+5. **Upload failures**: Check R2 API credentials and bucket permissions
+6. **Signature mismatch**: Ensure frontend sends exact same headers that were signed in the pre-signed URL
 
 ### Debugging
 
@@ -835,6 +1159,22 @@ Enable debug logging by checking the Cloudflare Workers logs:
 ```bash
 npx wrangler tail
 ```
+
+### Recent Fixes Applied
+
+**CORS Configuration Fix (Critical)**:
+- **Problem**: Using `"headers": ["*"]` wildcards in CORS policy caused 403 errors
+- **Solution**: Specify exact headers: `["content-type", "x-amz-meta-original-filename", "x-amz-meta-uploaded-at", "x-amz-meta-uploaded-by"]`
+- **Why**: Cloudflare R2 doesn't support wildcard headers like AWS S3
+
+**Metadata Headers Fix**:
+- **Problem**: Frontend wasn't sending metadata headers that matched the signed request
+- **Solution**: Frontend must send exact same headers that were signed in the pre-signed URL
+- **Required Headers**: `Content-Type`, `x-amz-meta-original-filename`, `x-amz-meta-uploaded-by`, `x-amz-meta-uploaded-at`
+
+**Expiration Time**:
+- **Default**: Pre-signed URLs now expire after 24 hours (86400 seconds)
+- **Reason**: Provides more time for uploads while maintaining security
 
 ## Next Steps
 
