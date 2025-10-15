@@ -221,6 +221,45 @@ Generates a pre-signed download URL for the user's profile image.
 - `404`: User not found
 - `500`: Internal server error
 
+#### POST `/api/user/profile/image`
+
+Issues a pre-signed PUT URL for uploading the user's profile image using a stable key that overwrites the existing object. The key is stored in `user.image` (UUID without extension). First call sets the key if missing; subsequent calls reuse it.
+
+**Authentication**: Required (Better Auth session)
+
+**Request Body**:
+```json
+{
+  "contentType": "image/png",
+  "fileSize": 301486,
+  "originalFilename": "avatar.png"
+}
+```
+
+**Response**:
+```json
+{
+  "presignedUrl": "https://.../gallery/<stable-uuid>?X-Amz-...",
+  "key": "<stable-uuid>",
+  "contentType": "image/png",
+  "fileSize": 301486,
+  "expiresIn": 86400,
+  "uploadedBy": "user-id",
+  "uploadedAt": "2025-01-13T20:45:00.000Z",
+  "originalFilename": "avatar.png"
+}
+```
+
+**Upload Instructions (frontend)**:
+- PUT the file to `presignedUrl` with headers:
+  - `Content-Type: <file.type>`
+  - `x-amz-meta-original-filename: <response.originalFilename>`
+  - `x-amz-meta-uploaded-by: <response.uploadedBy>`
+  - `x-amz-meta-uploaded-at: <response.uploadedAt>`
+
+**Overwrite Semantics**:
+- The same key is reused for all future profile uploads, so the object is overwritten instead of creating new objects.
+
 ## Complete Profile Management Flow
 
 ### Frontend Implementation Example

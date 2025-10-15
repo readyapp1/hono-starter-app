@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm'
 import { user } from '../db/schema'
 import { neon } from '@neondatabase/serverless'
 import { drizzle } from 'drizzle-orm/neon-http'
+import { signPresignedPut } from '../lib/r2'
 
 const profile = new Hono<{ Bindings: Env }>()
 
@@ -87,12 +88,19 @@ profile.post('/profile', async (c) => {
 
     // Update user in database
     const db = getDb(c.env)
+    const updateData: Record<string, unknown> = {
+      name,
+      updatedAt: new Date()
+    }
+
+    // Only update image if the field is present in the payload.
+    // This prevents wiping image to null on name-only updates.
+    if (Object.prototype.hasOwnProperty.call(body, 'image')) {
+      updateData.image = image // permit explicit null to clear
+    }
+
     const updatedUser = await db.update(user)
-      .set({
-        name,
-        image: image || null, // Allow clearing image by passing null
-        updatedAt: new Date()
-      })
+      .set(updateData)
       .where(eq(user.id, session.user.id))
       .returning()
 
@@ -196,3 +204,72 @@ profile.get('/profile/image', async (c) => {
 })
 
 export default profile
+ 
+// POST /api/user/profile/image - Generate overwrite pre-signed URL for profile image
+profile.post('/profile/image', async (c) => {
+  try {
+    const session = await auth(c.env).api.getSession({
+      headers: c.req.raw.headers
+    })
+
+    if (!session) {
+      return c.json({ error: 'Authentication required' }, 401)
+    }
+
+    const body = await c.req.json()
+    const { contentType, fileSize, originalFilename } = body as {
+      contentType: string
+      fileSize: number
+      originalFilename?: string
+    }
+
+    if (!contentType || !fileSize) {
+      return c.json({ error: 'contentType and fileSize are required' }, 400)
+    }
+
+    const db = getDb(c.env)
+    const userRows = await db.select().from(user).where(eq(user.id, session.user.id)).limit(1)
+    if (userRows.length === 0) {
+      return c.json({ error: 'User not found' }, 404)
+    }
+    const currentUser = userRows[0]
+
+    // Determine stable key (no extension). First time: set and persist immediately
+    let key = currentUser.image
+    if (!key) {
+      // Use crypto.randomUUID() if available; fallback to AWS client's random if needed
+      // In Workers, self.crypto.randomUUID is available
+      key = crypto.randomUUID()
+      await db.update(user)
+        .set({ image: key, updatedAt: new Date() })
+        .where(eq(user.id, session.user.id))
+    }
+
+    const uploadedAt = new Date().toISOString()
+    const effectiveOriginalFilename = (originalFilename && String(originalFilename)) || key
+
+    // Sign pre-signed PUT for overwrite semantics
+    const presignedUrl = await signPresignedPut(c.env, key, {
+      'Content-Type': contentType,
+      'x-amz-meta-original-filename': effectiveOriginalFilename,
+      'x-amz-meta-uploaded-by': session.user.id,
+      'x-amz-meta-uploaded-at': uploadedAt,
+    }, 86400)
+
+    return c.json({
+      presignedUrl,
+      key,
+      contentType,
+      fileSize,
+      expiresIn: 86400,
+      uploadedBy: session.user.id,
+      uploadedAt,
+      originalFilename: effectiveOriginalFilename,
+    })
+
+  } catch (error) {
+    console.error('Error generating profile image upload URL:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
